@@ -1,9 +1,9 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Deployment.Application;
 using System.Diagnostics;
 using System.Drawing.Imaging;
 using System.IO;
-using System.Linq;
 using System.Net;
 using System.Net.Mail;
 using System.Net.Sockets;
@@ -146,7 +146,7 @@ namespace CrashReporterDotNET
         /// Retries any previously failed report silently. If the first fails, it will stop.
         /// </summary>
         /// <returns>Whether any report has been sent.</returns>
-        public bool RetryFailedReports() => RetryFailedReports(out var y, out var z);
+        public bool RetryFailedReports() => RetryFailedReports(out var failedReports, out var failedReportsSent);
         /// <summary>
         /// Retries any previously failed report silently. If the first fails, it will stop.
         /// </summary>
@@ -159,10 +159,20 @@ namespace CrashReporterDotNET
             failedReportsSent = 0;
             if (!tempDirectory.Exists) return false;
 
-            var loadedFailedReports = tempDirectory.EnumerateFiles("failed-report-*.bin")
-                .Select(SelectFailedReport)
-                .Where(ex => ex.Exception != null);
-            failedReports = loadedFailedReports.Count();
+            List<LoadFailedReportResult> loadedFailedReports = new List<LoadFailedReportResult>();
+            foreach (var fileInfo in tempDirectory.GetFiles())
+            {
+                if (fileInfo.Name.StartsWith("failed-report"))
+                {
+                    var loadedFailedReport = SelectFailedReport(fileInfo);
+                    if (loadedFailedReport.Exception != null)
+                    {
+                        loadedFailedReports.Add(loadedFailedReport);
+                    }
+                }
+            }
+
+            failedReports = loadedFailedReports.Count;
 
             foreach (var failedReport in loadedFailedReports)
             {
@@ -193,7 +203,7 @@ namespace CrashReporterDotNET
             if (deserializedObject == null)
             {
                 fileInfo.Delete();
-                return default;
+                return default(LoadFailedReportResult);
             }
             var result = deserializedObject.Value;
             result.FileInfo = fileInfo;
@@ -245,14 +255,14 @@ namespace CrashReporterDotNET
             {
                 Debug.Write(e.Message);
             }
-
+            
             if (!AnalyzeWithDoctorDump)
             {
                 if (string.IsNullOrEmpty(FromEmail))
                 {
                     throw new ArgumentNullException(@"FromEmail");
                 }
-
+                
                 if (string.IsNullOrEmpty(SmtpHost))
                 {
                     throw new ArgumentNullException("SmtpHost");
@@ -291,6 +301,7 @@ namespace CrashReporterDotNET
             string userMessage = "")
         {
             string subject = String.Empty;
+            
             if (string.IsNullOrEmpty(from))
             {
                 from = !string.IsNullOrEmpty(FromEmail)
@@ -308,14 +319,13 @@ namespace CrashReporterDotNET
             }
             else
             {
-                SendEmail(includeScreenshot, smtpClientSendCompleted, from, subject, userMessage);
+                SendEmail(includeScreenshot, smtpClientSendCompleted, subject, userMessage);
             }
         }
 
         #region Send Email Using SMTP
 
-        private void SendEmail(bool includeScreenshot, SendCompletedEventHandler smtpClientSendCompleted, string from,
-            string subject, string userMessage)
+        private void SendEmail(bool includeScreenshot, SendCompletedEventHandler smtpClientSendCompleted, string subject, string userMessage)
         {
             if (string.IsNullOrEmpty(subject))
             {
@@ -329,16 +339,12 @@ namespace CrashReporterDotNET
                 EnableSsl = EnableSSL,
                 DeliveryMethod = SmtpDeliveryMethod.Network,
                 UseDefaultCredentials = false,
-                Credentials = new NetworkCredential(UserName, Password),
+                Credentials = new NetworkCredential(UserName, Password)
             };
 
-            var message = new MailMessage(new MailAddress(from), new MailAddress(ToEmail))
-            {
-                IsBodyHtml = true,
-                Subject = subject,
-                Body = CreateHtmlReport(userMessage)
-            };
-
+            var message = new MailMessage(new MailAddress(FromEmail), new MailAddress(ToEmail))
+                {IsBodyHtml = true, Subject = subject, Body = CreateHtmlReport(userMessage)};
+            
             if (ScreenShotBinary?.Length > 0 && includeScreenshot)
             {
                 message.Attachments.Add(new Attachment(new MemoryStream(ScreenShotBinary), "Screenshot.png", "image/png"));
